@@ -161,15 +161,19 @@ __global__ void TransPoseKernel(TValue *in_mat, TValue *out_mat, int nx,
 
   __shared__ int block_share_in[TBlockDimX * TBlockDimY];
 
+  constexpr int bank_confict_diff = 1;
   int blockScopeIdx = threadIdx.y * blockDim.x + threadIdx.x;
 
   int rx = blockIdx.y * blockDim.y + blockScopeIdx % blockDim.y;
   int ry = blockIdx.x * blockDim.x + blockScopeIdx / blockDim.y;
 
-  block_share_in[blockScopeIdx] = in_mat[ry * ny + rx];
+  block_share_in[blockScopeIdx + blockScopeIdx / blockDim.y *
+                                     bank_confict_diff] = in_mat[ry * ny + rx];
   __syncthreads();
 
-  out_mat[y * nx + x] = block_share_in[threadIdx.x * blockDim.y + threadIdx.y];
+  out_mat[y * nx + x] =
+      block_share_in[threadIdx.x * (blockDim.y + bank_confict_diff) +
+                     threadIdx.y];
 }
 
 void TransPose() {
