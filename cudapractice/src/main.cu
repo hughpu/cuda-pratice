@@ -151,8 +151,9 @@ void ReduceSum() {
   printf("final sum: %f\n", final_sum);
 }
 
-template <int TBlockDimX, int TBlockDimY>
-__global__ void TransPoseKernel(int *in_mat, int *out_mat, int nx, int ny) {
+template <int TBlockDimX, int TBlockDimY, typename TValue>
+__global__ void TransPoseKernel(TValue *in_mat, TValue *out_mat, int nx,
+                                int ny) {
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
 
