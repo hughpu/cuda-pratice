@@ -151,6 +151,73 @@ void ReduceSum() {
   printf("final sum: %f\n", final_sum);
 }
 
+template <int TBlockDimX, int TBlockDimY>
+__global__ void TransPoseKernel(int *in_mat, int *out_mat, int nx, int ny) {
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (x > nx || y > ny) return;
+
+  __shared__ int block_share_in[TBlockDimX * TBlockDimY];
+
+  int blockScopeIdx = threadIdx.y * blockDim.x + threadIdx.x;
+
+  int rx = blockIdx.y * blockDim.y + blockScopeIdx % blockDim.y;
+  int ry = blockIdx.x * blockDim.x + blockScopeIdx / blockDim.y;
+
+  block_share_in[blockScopeIdx] = in_mat[ry * ny + rx];
+  __syncthreads();
+
+  out_mat[y * nx + x] = block_share_in[threadIdx.x * blockDim.y + threadIdx.y];
+}
+
+void TransPose() {
+  int nx = 1 << 12, ny = 1 << 11;
+  thrust::universal_vector<int> in_mat(ny * nx);
+  thrust::universal_vector<int> out_mat(nx * ny);
+
+  for (int i = 0; i < nx * ny; ++i) {
+    in_mat[i] = i;
+  }
+
+  TransPoseKernel<64, 16><<<dim3(nx / 64, ny / 16, 1), dim3(64, 16, 1)>>>(
+      thrust::raw_pointer_cast(in_mat.data()),
+      thrust::raw_pointer_cast(out_mat.data()), nx, ny);
+
+  checkCudaErrors(cudaDeviceSynchronize());
+
+  for (int y = 0; y < ny; ++y) {
+    for (int x = 0; x < nx; ++x) {
+      if (in_mat[x * ny + y] != out_mat[y * nx + x]) {
+        char buffer[20];
+        sprintf(buffer, "mismatch at (%d, %d): %d != %d\n", x, y,
+                in_mat[x * ny + y], out_mat[y * nx + x]);
+        printf(buffer);
+
+        throw std::runtime_error(buffer);
+      }
+    }
+  }
+
+  printf("---corresponding in samples---");
+  for (int x = 0; x < 4; ++x) {
+    printf("\n");
+    for (int y = 0; y < 8; ++y) {
+      printf("%4d, ", in_mat[x * ny + y]);
+    }
+  }
+
+  printf("\n\n---corresponding out samples---");
+  for (int y = 0; y < 8; ++y) {
+    printf("\n");
+    for (int x = 0; x < 4; ++x) {
+      printf("%4d, ", out_mat[y * nx + x]);
+    }
+  }
+
+  printf("\n\nAll corrected!");
+}
+
 enum Demo {
   REDUCE_SUM,
   HELLO_WORLD,
@@ -196,7 +263,7 @@ int main(int argc, char *argv[]) {
       HelloWorld();
       break;
     case Demo::TRANSPOSE:
-      printf("transpose is not implemented yet");
+      TransPose();
       break;
     case Demo::GEMM:
       printf("gemm is not implemented yet");
