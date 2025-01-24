@@ -228,16 +228,16 @@ void TransPose() {
 
 template <const int TBlockSizeM, const int TBlockSizeN, const int TBlockSizeK,
           const int TThreadSizeM, const int TThreadSizeN>
-__global__ void GemmKernel(const float *__restrict__ A,
-                           const float *__restrict__ B, float *__restrict__ C,
-                           const int M, const int N, const int K) {
+__global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
+                           float *__restrict__ C, const int M, const int N,
+                           const int K) {
   int bx = blockIdx.x;
   int by = blockIdx.y;
   int tx = threadIdx.x;
   int ty = threadIdx.y;
 
-  constexpr int kNumThreadsInX = TBlockSizeM / TThreadSizeM;
-  constexpr int kNumThreadsInY = TBlockSizeN / TThreadSizeN;
+  constexpr int kNumThreadsInX = TBlockSizeN / TThreadSizeN;
+  constexpr int kNumThreadsInY = TBlockSizeM / TThreadSizeM;
   constexpr int kNumThreads = kNumThreadsInX * kNumThreadsInY;
 
   int tid = ty * kNumThreadsInX + tx;
@@ -256,7 +256,7 @@ __global__ void GemmKernel(const float *__restrict__ A,
   constexpr int b_share_copy_threads_per_row = TBlockSizeN / kFloatsPerCopy;
   constexpr int b_share_copy_row_stride =
       kNumThreads / b_share_copy_threads_per_row;
-  float4 ldg_a[TBlockSizeM / a_share_copy_row_stride * kFloatsPerCopy];
+  float ldg_a[TBlockSizeM / a_share_copy_row_stride * kFloatsPerCopy];
 
   int a_share_copy_start_row = tid / a_share_copy_threads_per_row;
   int a_share_copy_col = tid % a_share_copy_threads_per_row * kFloatsPerCopy;
@@ -288,13 +288,13 @@ __global__ void GemmKernel(const float *__restrict__ A,
 
 #pragma unroll
   for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
-    FETCH_FLOAT4(reg_a[0][x]) =
+    FETCH_FLOAT4(reg_a[0][y]) =
         FETCH_FLOAT4(a_share[0][0][ty * TBlockSizeM + y]);
   }
 
 #pragma unroll
   for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
-    FETCH_FLOAT4(reg_b[0][i]) =
+    FETCH_FLOAT4(reg_b[0][x]) =
         FETCH_FLOAT4(b_share[0][0][tx * TBlockSizeN + x]);
   }
 
@@ -356,10 +356,9 @@ __global__ void GemmKernel(const float *__restrict__ A,
 #pragma unroll
       for (int i = b_share_copy_start_row; i < TBlockSizeK;
            i += b_share_copy_row_stride) {
-        FETCH_FLOAT4(
-            b_share[write_stage_idx][i][b_share_copy_col] =
-                FETCH_FLOAT4(B[OFFSET(i + tile_k_idx,
-                                      b_share_copy_col + bx * TBlockSizeN, N)]))
+        FETCH_FLOAT4(b_share[write_stage_idx][i][b_share_copy_col]) =
+            FETCH_FLOAT4(B[OFFSET(i + tile_k_idx,
+                                  b_share_copy_col + bx * TBlockSizeN, N)]);
       }
     }
 
@@ -368,13 +367,13 @@ __global__ void GemmKernel(const float *__restrict__ A,
     if (tile_k_idx < K) {
 #pragma unroll
       for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
-        FETCH_FLOAT4(reg_a[0][x]) =
+        FETCH_FLOAT4(reg_a[0][y]) =
             FETCH_FLOAT4(a_share[write_stage_idx][0][ty * TBlockSizeM + y]);
       }
 
 #pragma unroll
       for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
-        FETCH_FLOAT4(reg_b[0][i]) =
+        FETCH_FLOAT4(reg_b[0][x]) =
             FETCH_FLOAT4(b_share[write_stage_idx][0][tx * TBlockSizeN + x]);
       }
     }
@@ -424,9 +423,12 @@ void Gemm() {
     }
   }
 
-  GemmKernel<128, 128, 16, 8, 8><<<M / 128, N / 128, 1>>>(
-      thrust::raw_pointer_cast(A), thrust::raw_pointer_cast(B),
-      thrust::raw_pointer_cast(C), M, N, K);
+  dim3 dim_block(128 / 8, 128 / 8);
+  dim3 dim_grid(N / 128, M / 128);
+
+  GemmKernel<128, 128, 16, 8, 8><<<dim_grid, dim_block>>>(
+      thrust::raw_pointer_cast(A.data()), thrust::raw_pointer_cast(B.data()),
+      thrust::raw_pointer_cast(C.data()), M, N, K);
 
   checkCudaErrors(cudaDeviceSynchronize());
 
@@ -488,7 +490,7 @@ int main(int argc, char *argv[]) {
       TransPose();
       break;
     case Demo::GEMM:
-      printf("gemm is not implemented yet");
+      Gemm();
       break;
     default:
       printf(USAGE);
