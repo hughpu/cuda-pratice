@@ -289,13 +289,13 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
 #pragma unroll
   for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
     FETCH_FLOAT4(reg_a[0][y]) =
-        FETCH_FLOAT4(a_share[0][0][ty * TBlockSizeM + y]);
+        FETCH_FLOAT4(a_share[0][0][ty * TThreadSizeM + y]);
   }
 
 #pragma unroll
   for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
     FETCH_FLOAT4(reg_b[0][x]) =
-        FETCH_FLOAT4(b_share[0][0][tx * TBlockSizeN + x]);
+        FETCH_FLOAT4(b_share[0][0][tx * TThreadSizeN + x]);
   }
 
   // outer iteration with blockK stride
@@ -303,7 +303,6 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
   int tile_k_idx = 0;
   do {
     tile_k_idx += TBlockSizeK;
-    int load_stage_idx = write_stage_idx ^ 1;
 
     if (tile_k_idx < K) {
 #pragma unroll
@@ -315,19 +314,20 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
       }
     }
 
+    int load_stage_idx = write_stage_idx ^ 1;
 // inner iteration with single step stride on k
 #pragma unroll
     for (int j = 0; j < TBlockSizeK - 1; ++j) {
 #pragma unroll
-      for (int y = 0; y < TThreadSizeM; ++y) {
-        reg_a[(j + 1) % 2][y] =
-            a_share[load_stage_idx][j + 1][ty * TBlockSizeM + y];
+      for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
+        FETCH_FLOAT4(reg_a[(j + 1) % 2][y]) =
+            FETCH_FLOAT4(a_share[load_stage_idx][j + 1][ty * TThreadSizeM + y]);
       }
 
 #pragma unroll
-      for (int x = 0; x < TThreadSizeN; ++x) {
-        reg_b[(j + 1) % 2][x] =
-            b_share[load_stage_idx][j + 1][tx * TBlockSizeN + x];
+      for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
+        FETCH_FLOAT4(reg_b[(j + 1) % 2][x]) =
+            FETCH_FLOAT4(b_share[load_stage_idx][j + 1][tx * TThreadSizeN + x]);
       }
 
 #pragma unroll
@@ -360,22 +360,20 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
             FETCH_FLOAT4(B[OFFSET(i + tile_k_idx,
                                   b_share_copy_col + bx * TBlockSizeN, N)]);
       }
+      __syncthreads();
+      write_stage_idx ^= 1;
     }
 
-    __syncthreads();
-
-    if (tile_k_idx < K) {
 #pragma unroll
-      for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
-        FETCH_FLOAT4(reg_a[0][y]) =
-            FETCH_FLOAT4(a_share[write_stage_idx][0][ty * TBlockSizeM + y]);
-      }
+    for (int y = 0; y < TThreadSizeM; y += kFloatsPerCopy) {
+      FETCH_FLOAT4(reg_a[0][y]) =
+          FETCH_FLOAT4(a_share[load_stage_idx ^ 1][0][ty * TThreadSizeM + y]);
+    }
 
 #pragma unroll
-      for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
-        FETCH_FLOAT4(reg_b[0][x]) =
-            FETCH_FLOAT4(b_share[write_stage_idx][0][tx * TBlockSizeN + x]);
-      }
+    for (int x = 0; x < TThreadSizeN; x += kFloatsPerCopy) {
+      FETCH_FLOAT4(reg_b[0][x]) =
+          FETCH_FLOAT4(b_share[load_stage_idx ^ 1][0][tx * TThreadSizeN + x]);
     }
 
 #pragma unroll
@@ -386,8 +384,6 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
             reg_a[(TBlockSizeK - 1) % 2][y] * reg_b[(TBlockSizeK - 1) % 2][x];
       }
     }
-
-    write_stage_idx ^= 1;
   } while (tile_k_idx < K);
 
 #pragma unroll
@@ -402,8 +398,8 @@ __global__ void GemmKernel(float *__restrict__ A, float *__restrict__ B,
 }
 
 void Gemm() {
-  const int M = 1 << 16;
-  const int N = 1 << 14;
+  const int M = 1 << 12;
+  const int N = 1 << 13;
   const int K = 1 << 8;
   thrust::universal_vector<float> A(M * K);
   thrust::universal_vector<float> B(K * N);
@@ -412,14 +408,14 @@ void Gemm() {
   for (int i = 0; i < M; ++i) {
     for (int j = 0; j < K; ++j) {
       A[i * K + j] =
-          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 6);
+          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
     }
   }
 
   for (int i = 0; i < K; ++i) {
     for (int j = 0; j < N; ++j) {
       B[i * N + j] =
-          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 6);
+          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
     }
   }
 
@@ -439,7 +435,7 @@ void Gemm() {
     }
   }
 
-  fprintf(stderr, "got c sum as %f", acc);
+  fprintf(stderr, "got c sum as %.3f\n", acc);
 }
 
 enum Demo {
