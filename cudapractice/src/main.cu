@@ -1,3 +1,4 @@
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
@@ -15,6 +16,15 @@
 
 #define OFFSET(row, col, stride) ((row) * (stride) + (col))
 #define FETCH_FLOAT4(element) (reinterpret_cast<float4 *>(&(element))[0])
+// cublas API error checking
+#define CUBLAS_CHECK(err)                                                  \
+  do {                                                                     \
+    cublasStatus_t err_ = (err);                                           \
+    if (err_ != CUBLAS_STATUS_SUCCESS) {                                   \
+      std::printf("cublas error %d at %s:%d\n", err_, __FILE__, __LINE__); \
+      throw std::runtime_error("cublas error");                            \
+    }                                                                      \
+  } while (0)
 
 template <class T>
 class CudaAllocator {
@@ -404,18 +414,24 @@ void Gemm() {
   thrust::universal_vector<float> A(M * K);
   thrust::universal_vector<float> B(K * N);
   thrust::universal_vector<float> C(M * N);
+  thrust::universal_vector<float> ACompare(M * K);
+  thrust::universal_vector<float> BCompare(K * N);
+  thrust::universal_vector<float> CCompare(M * N);
 
+  float a_val, b_val;
   for (int i = 0; i < M; ++i) {
     for (int j = 0; j < K; ++j) {
-      A[i * K + j] =
-          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
+      a_val = ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
+      A[i * K + j] = a_val;
+      ACompare[j * M + i] = a_val;
     }
   }
 
   for (int i = 0; i < K; ++i) {
     for (int j = 0; j < N; ++j) {
-      B[i * N + j] =
-          ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
+      b_val = ((std::rand() & ((1 << 6) - 1)) - (1 << 5)) * 1.f / (1 << 8);
+      B[i * N + j] = b_val;
+      BCompare[j * K + i] = b_val;
     }
   }
 
@@ -426,16 +442,36 @@ void Gemm() {
       thrust::raw_pointer_cast(A.data()), thrust::raw_pointer_cast(B.data()),
       thrust::raw_pointer_cast(C.data()), M, N, K);
 
+  cublasHandle_t handle = NULL;
+  CUBLAS_CHECK(cublasCreate(&handle));
+  float alpha = 1.0f;
+  float beta = 0.0f;
+  CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha,
+                           thrust::raw_pointer_cast(ACompare.data()), M,
+                           thrust::raw_pointer_cast(BCompare.data()), K, &beta,
+                           thrust::raw_pointer_cast(CCompare.data()), M));
+
   checkCudaErrors(cudaDeviceSynchronize());
 
-  float acc = 0;
+  cublasDestroy(handle);
+
+  float acc = 0.f;
   for (int i = 0; i < M; ++i) {
     for (int j = 0; j < N; ++j) {
       acc += C[i * N + j];
     }
   }
 
-  fprintf(stderr, "got c sum as %.3f\n", acc);
+  fprintf(stderr, "self implemented gemm: c = %.3f\n", acc);
+
+  acc = 0.f;
+  for (int i = 0; i < M; ++i) {
+    for (int j = 0; j < N; ++j) {
+      acc += CCompare[j * M + i];
+    }
+  }
+
+  fprintf(stderr, "cublas sgemm: c = %.3f\n", acc);
 }
 
 enum Demo {
