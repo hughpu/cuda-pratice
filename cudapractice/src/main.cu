@@ -497,8 +497,8 @@ void Gemm() {
   fprintf(stderr, "self implemented gemm: c = %.3f\n", acc);
 
   acc = 0.f;
-  for (int j = 0; j < N; ++j) {
-    for (int i = 0; i < M; ++i) {
+  for (int i = 0; i < M; ++i) {
+    for (int j = 0; j < N; ++j) {
       acc += CCompare[j * M + i];
     }
   }
