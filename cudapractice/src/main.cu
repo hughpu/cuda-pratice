@@ -435,25 +435,57 @@ void Gemm() {
     }
   }
 
+  checkCudaErrors(cudaDeviceSynchronize());
+
   dim3 dim_block(128 / 8, 128 / 8);
   dim3 dim_grid(N / 128, M / 128);
 
-  GemmKernel<128, 128, 16, 8, 8><<<dim_grid, dim_block>>>(
-      thrust::raw_pointer_cast(A.data()), thrust::raw_pointer_cast(B.data()),
-      thrust::raw_pointer_cast(C.data()), M, N, K);
+  cudaStream_t stream1, stream2;
+  checkCudaErrors(cudaStreamCreate(&stream1));
+  checkCudaErrors(cudaStreamCreate(&stream2));
 
-  cublasHandle_t handle = NULL;
-  CUBLAS_CHECK(cublasCreate(&handle));
+  cudaEvent_t start1, stop1, start2, stop2;
+  checkCudaErrors(cudaEventCreate(&start1));
+  checkCudaErrors(cudaEventCreate(&stop1));
+  checkCudaErrors(cudaEventCreate(&start2));
+  checkCudaErrors(cudaEventCreate(&stop2));
+
+  // start cublas gemm
   float alpha = 1.0f;
   float beta = 0.0f;
+  cublasHandle_t handle = NULL;
+  CUBLAS_CHECK(cublasCreate(&handle));
+  CUBLAS_CHECK(cublasSetStream(handle, stream2));
+
+  checkCudaErrors(cudaStreamSynchronize(stream2));
+  checkCudaErrors(cudaEventRecord(start2, stream2));
+
   CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha,
                            thrust::raw_pointer_cast(ACompare.data()), M,
                            thrust::raw_pointer_cast(BCompare.data()), K, &beta,
                            thrust::raw_pointer_cast(CCompare.data()), M));
+  checkCudaErrors(cudaEventRecord(stop2, stream2));
+
+  checkCudaErrors(cudaStreamSynchronize(stream2));
+
+  // start self implemented gemm
+  checkCudaErrors(cudaStreamSynchronize(stream1));
+  checkCudaErrors(cudaEventRecord(start1, stream1));
+  GemmKernel<128, 128, 16, 8, 8><<<dim_grid, dim_block, 0, stream1>>>(
+      thrust::raw_pointer_cast(A.data()), thrust::raw_pointer_cast(B.data()),
+      thrust::raw_pointer_cast(C.data()), M, N, K);
+  checkCudaErrors(cudaEventRecord(stop1, stream1));
+  checkCudaErrors(cudaStreamSynchronize(stream1));
+
+  // perf counting
+  float elapsed_time1 = 0.0f, elapsed_time2 = 0.0f;
+  checkCudaErrors(cudaEventElapsedTime(&elapsed_time1, start1, stop1));
+  printf("self implemented gemm cost %.3f ms\n", elapsed_time1);
+
+  checkCudaErrors(cudaEventElapsedTime(&elapsed_time2, start2, stop2));
+  printf("cublas gemm cost %.3f ms\n", elapsed_time2);
 
   checkCudaErrors(cudaDeviceSynchronize());
-
-  cublasDestroy(handle);
 
   float acc = 0.f;
   for (int i = 0; i < M; ++i) {
@@ -465,13 +497,26 @@ void Gemm() {
   fprintf(stderr, "self implemented gemm: c = %.3f\n", acc);
 
   acc = 0.f;
-  for (int i = 0; i < M; ++i) {
-    for (int j = 0; j < N; ++j) {
+  for (int j = 0; j < N; ++j) {
+    for (int i = 0; i < M; ++i) {
       acc += CCompare[j * M + i];
     }
   }
 
   fprintf(stderr, "cublas sgemm: c = %.3f\n", acc);
+  fprintf(stderr,
+          "!!! cublass cost more perhaps caused to self implemented gemm "
+          "ignoring the copy "
+          "of C matric and scaling with alpha and beta coeffient\n");
+
+  CUBLAS_CHECK(cublasDestroy(handle));
+  checkCudaErrors(cudaEventDestroy(start1));
+  checkCudaErrors(cudaEventDestroy(stop1));
+  checkCudaErrors(cudaEventDestroy(start2));
+  checkCudaErrors(cudaEventDestroy(stop2));
+
+  checkCudaErrors(cudaStreamDestroy(stream1));
+  checkCudaErrors(cudaStreamDestroy(stream2));
 }
 
 enum Demo {
